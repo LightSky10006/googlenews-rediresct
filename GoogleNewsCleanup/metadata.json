@@ -1,0 +1,9 @@
+{
+  "name": "Google News RSS Link Cleanup",
+  "description": "清理 Google News RSS 的連結，移除追蹤碼並還原原始連結",
+  "version": "1.0.0",
+  "author": "Your Name",
+  "entrypoint": "index.php",
+  "permissions": ["entry_url"],
+  "type": "item"
+}
