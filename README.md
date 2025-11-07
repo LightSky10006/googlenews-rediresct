@@ -1,9 +1,9 @@
-# FreshRSS Google News Link Cleanup Plugin
+# FreshRSS Google News Link Cleanup
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub last commit](https://img.shields.io/github/last-commit/Lightsky10006/xExtension-google_news_redirect)](https://github.com/your-username/xExtension-google_news_redirect)
 
-一個強大的 FreshRSS 插件，自動清理和還原 Google News RSS 中隱藏的原始連結。
+一個 FreshRSS 擴充套件，自動清理和還原 Google News RSS 中隱藏的原始連結。
 
 ## 功能
 
@@ -13,8 +13,8 @@
 
 ## 示例
 
-| 來源連結 | 清理後 |
-|---------|--------|
+| 來源連結 | 
+|---------|
 | `https://news.google.com/rss/articles/xxxx` |
 
 ## 快速開始
