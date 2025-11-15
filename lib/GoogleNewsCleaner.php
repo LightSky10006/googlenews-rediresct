@@ -123,25 +123,82 @@ class GoogleNewsCleaner {
             $url = "https://news.google.com/articles/$gn_art_id";
             
             $ch = curl_init($url);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            $response = curl_exec($ch);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_MAXREDIRS => 5,
+                CURLOPT_TIMEOUT => 15,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
+                CURLOPT_ENCODING => '',
+                CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                CURLOPT_HTTPHEADER => [
+                    'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language: en-US,en;q=0.9',
+                    'Accept-Encoding: gzip, deflate, br',
+                    'Connection: keep-alive',
+                    'Upgrade-Insecure-Requests: 1',
+                    'Sec-Fetch-Dest: document',
+                    'Sec-Fetch-Mode: navigate',
+                    'Sec-Fetch-Site: none',
+                ],
+            ]);
             
-            if (curl_errno($ch)) {
-                Minz_Log::error('GoogleNewsClean: Curl error: ' . curl_error($ch));
-                curl_close($ch);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            curl_close($ch);
+            
+            if ($error) {
+                Minz_Log::error('GoogleNewsClean: Curl error: ' . $error);
                 return null;
             }
             
-            curl_close($ch);
+            if ($httpCode !== 200) {
+                Minz_Log::warning("GoogleNewsClean: Failed to fetch article page, HTTP $httpCode");
+                return null;
+            }
+            
+            if (empty($response)) {
+                Minz_Log::warning('GoogleNewsClean: Empty response from Google News');
+                return null;
+            }
             
             // Load the response into DOMDocument
             $dom = new DOMDocument();
-            @$dom->loadHTML($response);
+            libxml_use_internal_errors(true); // 抑制 HTML 解析警告
+            $loaded = @$dom->loadHTML($response);
+            libxml_clear_errors();
+            
+            if (!$loaded) {
+                Minz_Log::warning('GoogleNewsClean: Failed to parse HTML response');
+                return null;
+            }
+            
             $xpath = new DOMXPath($dom);
-            $div = $xpath->query("//c-wiz/div")->item(0);
+            
+            // 嘗試多種可能的選擇器
+            $div = null;
+            $queries = [
+                "//c-wiz/div",
+                "//c-wiz//div[@data-n-a-sg]",
+                "//div[@data-n-a-sg]",
+                "//*[@data-n-a-sg]"
+            ];
+            
+            foreach ($queries as $query) {
+                $result = $xpath->query($query);
+                if ($result && $result->length > 0) {
+                    $div = $result->item(0);
+                    Minz_Log::debug("GoogleNewsClean: Found element using query: $query");
+                    break;
+                }
+            }
             
             if (!$div) {
-                Minz_Log::warning('GoogleNewsClean: Could not find c-wiz/div element');
+                // 記錄部分 HTML 以便調試
+                $preview = substr(strip_tags($response), 0, 300);
+                Minz_Log::warning('GoogleNewsClean: Could not find element with data-n-a-sg. Response preview: ' . $preview);
                 return null;
             }
             
@@ -149,9 +206,11 @@ class GoogleNewsCleaner {
             $timestamp = $div->getAttribute("data-n-a-ts");
             
             if (empty($signature) || empty($timestamp)) {
-                Minz_Log::warning('GoogleNewsClean: Missing signature or timestamp');
+                Minz_Log::warning("GoogleNewsClean: Missing signature or timestamp (sig: '$signature', ts: '$timestamp')");
                 return null;
             }
+            
+            Minz_Log::debug("GoogleNewsClean: Successfully extracted params - signature: $signature, timestamp: $timestamp");
             
             return [
                 "signature" => $signature,
