@@ -37,8 +37,8 @@ class GoogleNewsCleanExtension extends Minz_Extension {
                 }
             }
 
-            // Feeds 勾選
-            $feeds = Minz_Request::param('feeds', []);
+            // Feeds 勾選 - 直接用參數名稱對應
+            $feeds = Minz_Request::param('GoogleNewsCleanFeeds', []);
             if (!is_array($feeds)) {
                 $feeds = [];
             }
@@ -56,18 +56,17 @@ class GoogleNewsCleanExtension extends Minz_Extension {
         }
     }
 
-    private function isTargetFeed($feedId) {
-        $feeds = FreshRSS_Context::$user_conf->GoogleNewsCleanFeeds ?? [];
-        return isset($feeds[$feedId]) && $feeds[$feedId] == '1';
-    }
-
     public function cleanEntryLink($entry) {
         if (!($entry instanceof FreshRSS_Entry)) {
-            return; // 防護
+            return;
         }
+        
         $feedId = $entry->feed()->id();
-        if (!$this->isTargetFeed($feedId)) {
-            return; // 未勾選的 Feed 不處理
+        $feeds = FreshRSS_Context::$user_conf->GoogleNewsCleanFeeds ?? [];
+        
+        // 只處理勾選的 feed
+        if (!isset($feeds[$feedId]) || $feeds[$feedId] != '1') {
+            return;
         }
 
         $url = $entry->link();
