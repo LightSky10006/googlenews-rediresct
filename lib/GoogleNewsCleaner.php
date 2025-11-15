@@ -1,117 +1,131 @@
 <?php
 class GoogleNewsCleaner {
     public function extractOriginalUrl(string $url): ?string {
-        Minz_Log::notice('GoogleNewsClean: start extract');
-        // 1. 直接解析 ?url= 參數 (部分情況會出現)
+        // 參考: https://stackoverflow.com/questions/78790420/extract-url-from-google-news-rss-feed
+        // Google News RSS 的 URL 格式通常是: https://news.google.com/rss/articles/[encoded_string]
+        
+        // 方法 1: 直接從 URL 參數提取
         if (preg_match('/[?&]url=([^&]+)/', $url, $m)) {
             $candidate = urldecode($m[1]);
-            if ($this->isNonGoogleHost($candidate)) {
-                Minz_Log::notice('GoogleNewsClean: found via query param');
+            if ($this->isValidUrl($candidate)) {
                 return $candidate;
             }
         }
-
-        // 2. 嘗試以 cURL 跟隨 HTTP 轉址
-        try {
-            $resolved = $this->resolveRedirects($url);
-            if ($resolved && $this->isNonGoogleHost($resolved)) {
-                Minz_Log::notice('GoogleNewsClean: found via redirects');
-                return $resolved;
+        
+        // 方法 2: 從 articles/ 路徑解碼 (主要方法)
+        if (preg_match('#/articles/(.+?)(?:\?|$)#', $url, $m)) {
+            $encoded = $m[1];
+            $decoded = $this->decodeGoogleNewsUrl($encoded);
+            if ($decoded) {
+                return $decoded;
             }
-        } catch (Throwable $e) {
-            Minz_Log::warning('GoogleNewsClean: redirect resolve error ' . $e->getMessage());
         }
-
-        // 3. 讀取內容，解析 meta refresh 中的 URL
-        try {
-            $final = $this->extractFromMetaRefresh($url);
-            if ($final && $this->isNonGoogleHost($final)) {
-                Minz_Log::notice('GoogleNewsClean: found via meta refresh');
-                return $final;
-            }
-        } catch (Throwable $e) {
-            Minz_Log::warning('GoogleNewsClean: meta refresh error ' . $e->getMessage());
+        
+        // 方法 3: 跟隨 HTTP 重定向
+        $redirected = $this->followRedirect($url);
+        if ($redirected && $redirected !== $url && $this->isValidUrl($redirected)) {
+            return $redirected;
         }
-
-        // 4. 有些 Google News RSS 文章 URL 編碼在 /articles/ 後，嘗試 Base64 片段判斷
-        //    範例: https://news.google.com/rss/articles/CBMiXGh0dHBzOi8vZXhhbXBsZS5jb20vYWJjP2Q9MTIz0... => 抓出可能的 https 起頭片段
-        if (preg_match('/articles\/([A-Za-z0-9+\-_]+)/', $url, $m)) {
-            try {
-                $decoded = $this->robustDecode($m[1]);
-                if ($decoded && preg_match('#https?://[^\s\"<>]+#', $decoded, $mm)) {
-                    $candidate = $mm[0];
-                    if ($this->isNonGoogleHost($candidate)) {
-                        Minz_Log::notice('GoogleNewsClean: found via articles fragment decode');
-                        return $candidate;
+        
+        return null;
+    }
+    
+    private function decodeGoogleNewsUrl(string $encoded): ?string {
+        // Google News 使用特殊的編碼格式
+        // 通常包含 Base64 編碼的 URL，前綴為 "CBMi" 或類似標記
+        
+        // 移除可能的 URL 參數
+        $encoded = preg_replace('/\?.*$/', '', $encoded);
+        
+        // 嘗試多種解碼方式
+        $patterns = [
+            // 直接 base64 解碼
+            function($str) {
+                // 補齊 padding
+                $str = str_pad($str, strlen($str) + (4 - strlen($str) % 4) % 4, '=');
+                $decoded = @base64_decode($str, true);
+                if ($decoded && preg_match('#https?://[^\s\x00-\x1f"<>]+#', $decoded, $m)) {
+                    return $m[0];
+                }
+                return null;
+            },
+            // URL-safe base64
+            function($str) {
+                $str = str_replace(['-', '_'], ['+', '/'], $str);
+                $str = str_pad($str, strlen($str) + (4 - strlen($str) % 4) % 4, '=');
+                $decoded = @base64_decode($str, true);
+                if ($decoded && preg_match('#https?://[^\s\x00-\x1f"<>]+#', $decoded, $m)) {
+                    return $m[0];
+                }
+                return null;
+            },
+            // 移除前綴後再解碼 (如 CBMi, CBIi 等)
+            function($str) {
+                if (preg_match('/^[A-Z]{2,4}[a-z](.+)/', $str, $m)) {
+                    $str = $m[1];
+                    $str = str_replace(['-', '_'], ['+', '/'], $str);
+                    $str = str_pad($str, strlen($str) + (4 - strlen($str) % 4) % 4, '=');
+                    $decoded = @base64_decode($str, true);
+                    if ($decoded && preg_match('#https?://[^\s\x00-\x1f"<>]+#', $decoded, $m)) {
+                        return $m[0];
                     }
                 }
-            } catch (Throwable $e) {
-                Minz_Log::warning('GoogleNewsClean: articles fragment decode error ' . $e->getMessage());
+                return null;
+            }
+        ];
+        
+        foreach ($patterns as $decoder) {
+            $result = $decoder($encoded);
+            if ($result && $this->isValidUrl($result)) {
+                return $result;
             }
         }
-
-        Minz_Log::notice('GoogleNewsClean: extraction ended without result');
-        return null; // 無法抽取
+        
+        return null;
     }
-
-    private function resolveRedirects(string $url): ?string {
+    
+    private function followRedirect(string $url): ?string {
+        if (!function_exists('curl_init')) {
+            return null;
+        }
+        
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_MAXREDIRS => 5,
+            CURLOPT_MAXREDIRS => 3,
             CURLOPT_TIMEOUT => 5,
-            CURLOPT_USERAGENT => 'FreshRSS GoogleNewsClean/1.0',
+            CURLOPT_USERAGENT => 'Mozilla/5.0 (compatible; FreshRSS)',
             CURLOPT_HEADER => false,
+            CURLOPT_NOBODY => true, // 只取 header
         ]);
-        curl_exec($ch);
+        
+        @curl_exec($ch);
         $finalUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
         curl_close($ch);
+        
         return $finalUrl ?: null;
     }
-
-    private function extractFromMetaRefresh(string $url): ?string {
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_TIMEOUT => 5,
-            CURLOPT_USERAGENT => 'FreshRSS GoogleNewsClean/1.0',
-        ]);
-        $html = curl_exec($ch);
-        curl_close($ch);
-        if (!is_string($html) || $html === '') {
-            return null;
+    
+    private function isValidUrl(string $url): bool {
+        // 檢查是否為有效的 URL 且不是 Google News
+        if (!filter_var($url, FILTER_VALIDATE_URL)) {
+            return false;
         }
-        if (preg_match('/<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\']\d+;\s*url=([^"\']+)["\']/i', $html, $m)) {
-            return trim($m[1]);
-        }
-        return null;
-    }
-
-    private function robustDecode(string $fragment): ?string {
-        // 嘗試 Base64 (加入缺失的 =)
-        $pad = strlen($fragment) % 4;
-        if ($pad !== 0) {
-            $fragment .= str_repeat('=', 4 - $pad);
-        }
-        $decoded = base64_decode($fragment, true);
-        if ($decoded !== false && $decoded !== '') {
-            return $decoded;
-        }
-        // 嘗試 URL decode
-        $urlDecoded = urldecode($fragment);
-        if ($urlDecoded !== $fragment) {
-            return $urlDecoded;
-        }
-        return null;
-    }
-
-    private function isNonGoogleHost(string $candidate): bool {
-        $host = parse_url($candidate, PHP_URL_HOST);
+        
+        $host = parse_url($url, PHP_URL_HOST);
         if (!$host) {
             return false;
         }
-        return stripos($host, 'news.google.com') === false && stripos($host, 'google.com') === false;
+        
+        // 排除 Google 網域
+        $googleDomains = ['google.com', 'google.', 'goo.gl', 'g.co'];
+        foreach ($googleDomains as $domain) {
+            if (stripos($host, $domain) !== false) {
+                return false;
+            }
+        }
+        
+        return true;
     }
 }
