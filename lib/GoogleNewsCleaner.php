@@ -97,15 +97,20 @@ class GoogleNewsCleaner {
     
     private function decodeNewFormat(string $articleId): ?string {
         try {
-            // 步驟 1: 獲取解碼參數 (signature 和 timestamp)
+            // 步驟 1: 獲取解碼參數
             $params = $this->getDecodingParams($articleId);
             if (!$params) {
                 return null;
             }
             
-            // 步驟 2: 使用參數調用 batchexecute API
-            $url = $this->batchExecuteDecode($params);
-            return $url;
+            // 步驟 2: 使用單個文章調用 batchexecute
+            $decodedUrls = $this->decodeUrlsBatch([$params]);
+            
+            if (!empty($decodedUrls) && isset($decodedUrls[0])) {
+                return $decodedUrls[0];
+            }
+            
+            return null;
             
         } catch (Throwable $e) {
             Minz_Log::error('GoogleNewsClean: decodeNewFormat exception: ' . $e->getMessage());
@@ -113,54 +118,45 @@ class GoogleNewsCleaner {
         }
     }
     
-    private function getDecodingParams(string $articleId): ?array {
+    private function getDecodingParams(string $gn_art_id): ?array {
         try {
-            $url = "https://news.google.com/articles/$articleId";
+            $url = "https://news.google.com/articles/$gn_art_id";
             
             $ch = curl_init($url);
-            curl_setopt_array($ch, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_TIMEOUT => 10,
-                CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            ]);
-            
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
             $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
             
-            if ($httpCode !== 200 || !$response) {
-                Minz_Log::warning('GoogleNewsClean: Failed to fetch article page, HTTP ' . $httpCode);
+            if (curl_errno($ch)) {
+                Minz_Log::error('GoogleNewsClean: Curl error: ' . curl_error($ch));
+                curl_close($ch);
                 return null;
             }
             
-            // 解析 HTML 獲取 data-n-a-sg 和 data-n-a-ts
+            curl_close($ch);
+            
+            // Load the response into DOMDocument
             $dom = new DOMDocument();
             @$dom->loadHTML($response);
             $xpath = new DOMXPath($dom);
+            $div = $xpath->query("//c-wiz/div")->item(0);
             
-            // 查找 c-wiz/div 元素
-            $divs = $xpath->query("//c-wiz/div");
-            if ($divs->length === 0) {
-                Minz_Log::warning('GoogleNewsClean: Could not find c-wiz/div in article page');
+            if (!$div) {
+                Minz_Log::warning('GoogleNewsClean: Could not find c-wiz/div element');
                 return null;
             }
             
-            $div = $divs->item(0);
-            $signature = $div->getAttribute('data-n-a-sg');
-            $timestamp = $div->getAttribute('data-n-a-ts');
+            $signature = $div->getAttribute("data-n-a-sg");
+            $timestamp = $div->getAttribute("data-n-a-ts");
             
             if (empty($signature) || empty($timestamp)) {
-                Minz_Log::warning('GoogleNewsClean: Missing signature or timestamp attributes');
+                Minz_Log::warning('GoogleNewsClean: Missing signature or timestamp');
                 return null;
             }
             
-            Minz_Log::debug("GoogleNewsClean: Got params - sig: $signature, ts: $timestamp");
-            
             return [
-                'signature' => $signature,
-                'timestamp' => $timestamp,
-                'gn_art_id' => $articleId
+                "signature" => $signature,
+                "timestamp" => $timestamp,
+                "gn_art_id" => $gn_art_id,
             ];
             
         } catch (Throwable $e) {
@@ -169,76 +165,68 @@ class GoogleNewsCleaner {
         }
     }
     
-    private function batchExecuteDecode(array $params): ?string {
+    private function decodeUrlsBatch(array $articles): array {
         try {
-            $articleReq = [
-                "Fbv4je",
-                json_encode([
-                    ["garturlreq", [
-                        ["X", "X", ["X", "X"], null, null, 1, 1, "US:en", null, 1, null, null, null, null, null, 0, 1],
-                        "X", "X", 1, [1, 1, 1], 1, 1, null, 0, 0, null, 0
-                    ]],
-                    $params['gn_art_id'],
-                    $params['timestamp'],
-                    $params['signature']
-                ])
+            $articles_reqs = [];
+
+            foreach ($articles as $art) {
+                $articles_reqs[] = [
+                    "Fbv4je",
+                    json_encode([
+                        ["garturlreq", [
+                            ["X", "X", ["X", "X"], null, null, 1, 1, "US:en", null, 1, null, null, null, null, null, 0, 1],
+                            "X", "X", 1, [1, 1, 1], 1, 1, null, 0, 0, null, 0
+                        ]],
+                        $art["gn_art_id"],
+                        $art["timestamp"],
+                        $art["signature"]
+                    ])
+                ];
+            }
+
+            $payload = "f.req=" . urlencode(json_encode([$articles_reqs]));
+            $headers = [
+                "Content-Type: application/x-www-form-urlencoded;charset=UTF-8",
             ];
-            
-            $payload = "f.req=" . urlencode(json_encode([[$articleReq]]));
-            
+
             $ch = curl_init("https://news.google.com/_/DotsSplashUi/data/batchexecute");
-            curl_setopt_array($ch, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_POST => true,
-                CURLOPT_POSTFIELDS => $payload,
-                CURLOPT_HTTPHEADER => [
-                    'Content-Type: application/x-www-form-urlencoded;charset=UTF-8',
-                ],
-                CURLOPT_TIMEOUT => 10,
-                CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            ]);
-            
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+
             $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
             
-            if ($httpCode !== 200 || !$response) {
-                Minz_Log::warning('GoogleNewsClean: batchexecute returned HTTP ' . $httpCode);
-                return null;
+            if (curl_errno($ch)) {
+                Minz_Log::error('GoogleNewsClean: Curl error: ' . curl_error($ch));
+                curl_close($ch);
+                return [];
             }
             
-            // 解析回應
+            curl_close($ch);
+            
             $responseParts = explode("\n\n", $response);
+            
             if (count($responseParts) < 2) {
-                Minz_Log::warning('GoogleNewsClean: Unexpected batchexecute response format');
-                return null;
+                Minz_Log::warning('GoogleNewsClean: Invalid response format');
+                return [];
             }
             
             $decoded = json_decode($responseParts[1], true);
-            if (!$decoded || !is_array($decoded) || count($decoded) < 1) {
-                Minz_Log::warning('GoogleNewsClean: Failed to parse batchexecute JSON response');
-                return null;
+            
+            if (!$decoded || !is_array($decoded)) {
+                Minz_Log::warning('GoogleNewsClean: Failed to decode JSON response');
+                return [];
             }
             
-            // 提取 URL
-            $firstResult = $decoded[0];
-            if (isset($firstResult[2])) {
-                $innerData = json_decode($firstResult[2], true);
-                if (isset($innerData[1])) {
-                    $url = $innerData[1];
-                    if (filter_var($url, FILTER_VALIDATE_URL)) {
-                        Minz_Log::debug('GoogleNewsClean: Successfully decoded to ' . $url);
-                        return $url;
-                    }
-                }
-            }
-            
-            Minz_Log::warning('GoogleNewsClean: Could not extract URL from batchexecute response');
-            return null;
+            return array_map(function($res) {
+                $innerData = json_decode($res[2], true);
+                return $innerData[1];
+            }, array_slice($decoded, 0, -2));
             
         } catch (Throwable $e) {
-            Minz_Log::error('GoogleNewsClean: batchExecuteDecode exception: ' . $e->getMessage());
-            return null;
+            Minz_Log::error('GoogleNewsClean: decodeUrlsBatch exception: ' . $e->getMessage());
+            return [];
         }
     }
     
