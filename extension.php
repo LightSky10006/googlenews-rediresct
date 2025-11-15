@@ -1,5 +1,4 @@
 <?php
-require_once(__DIR__ . '/lib/GoogleNewsCleaner.php');
 
 class GoogleNewsCleanExtension extends Minz_Extension {
     public function init() {
@@ -59,30 +58,41 @@ class GoogleNewsCleanExtension extends Minz_Extension {
     public function cleanEntry($entry) {
         $feedId = $entry->feed()->id();
         
+        // 只處理勾選的 feed
         if (isset(FreshRSS_Context::$user_conf->GoogleNewsCleanFeeds[$feedId]) && 
             FreshRSS_Context::$user_conf->GoogleNewsCleanFeeds[$feedId] == '1') {
             
             $url = $entry->link();
+            Minz_Log::debug('GoogleNewsClean: Processing feed ' . $feedId . ' URL: ' . $url);
             
+            // 只處理 Google News 連結
             if (strpos($url, 'news.google.com') !== false) {
                 require_once __DIR__ . '/lib/GoogleNewsCache.php';
+                require_once __DIR__ . '/lib/GoogleNewsCleaner.php';
+                
                 $cacheFile = __DIR__ . '/data/cache.json';
                 $ttl = FreshRSS_Context::$user_conf->GoogleNewsCleanTTL ?? 604800;
                 $max = FreshRSS_Context::$user_conf->GoogleNewsCleanMax ?? 1000;
                 $cache = new GoogleNewsCache($cacheFile, $ttl, $max);
                 
+                // 檢查快取
                 $cached = $cache->get($url);
                 if ($cached) {
+                    Minz_Log::debug('GoogleNewsClean: Cache hit, using: ' . $cached);
                     $entry->_link($cached);
                     return $entry;
                 }
 
+                // 解析 Google News URL
                 $cleaner = new GoogleNewsCleaner();
                 $cleanUrl = $cleaner->extractOriginalUrl($url);
                 
                 if (!empty($cleanUrl) && $cleanUrl !== $url) {
+                    Minz_Log::notice('GoogleNewsClean: Cleaned URL from ' . $url . ' to ' . $cleanUrl);
                     $entry->_link($cleanUrl);
                     $cache->set($url, $cleanUrl);
+                } else {
+                    Minz_Log::warning('GoogleNewsClean: Failed to extract URL from ' . $url);
                 }
             }
         }
