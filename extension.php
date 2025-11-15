@@ -65,7 +65,7 @@ class GoogleNewsCleanExtension extends Minz_Extension {
         if (!($entry instanceof FreshRSS_Entry)) {
             return; // 防護
         }
-        $feedId = $entry->idFeed();
+        $feedId = $entry->feed()->id();
         if (!$this->isTargetFeed($feedId)) {
             return; // 未勾選的 Feed 不處理
         }
