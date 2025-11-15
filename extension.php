@@ -10,9 +10,17 @@ class GoogleNewsCleanExtension extends Minz_Extension {
     }
 
     public function install() {
-        if (!isset($this->config['feeds'])) {
-            $this->config['feeds'] = [];
+        $config = $this->getConfig();
+        if (!isset($config['feeds'])) {
+            $config['feeds'] = [];
         }
+        if (!isset($config['cache_ttl'])) {
+            $config['cache_ttl'] = 604800; // 7 天
+        }
+        if (!isset($config['cache_max'])) {
+            $config['cache_max'] = 1000;
+        }
+        $this->saveConfig($config);
         return true;
     }
 
@@ -28,16 +36,27 @@ class GoogleNewsCleanExtension extends Minz_Extension {
 
     public function handleConfigureAction() {
         if (Minz_Request::isPost()) {
+            $token = Minz_Request::param('_csrf');
+            if (!FreshRSS_Auth::hasValidCsrf($token)) {
+                Minz_Session::warning(_t('gen.csrf.failed'));
+                Minz_Url::redirect(['c' => 'extension', 'a' => 'configure', 'params' => ['ext' => $this->name]]);
+                return;
+            }
+
             $feeds = Minz_Request::param('feeds', []);
-            $this->config['feeds'] = array_map('intval', $feeds);
-            $this->saveConfig();
-            Minz_Session::_param('info', '設定已儲存');
+            $feeds = array_map('intval', is_array($feeds) ? $feeds : []);
+
+            $config = $this->getConfig();
+            $config['feeds'] = $feeds;
+            $this->saveConfig($config);
+            Minz_Session::param('info', _t('gen.form.prefs.updated'));
         }
-        require __DIR__ . '/configure.php';
+        require __DIR__ . '/configure.phtml';
     }
 
     private function isTargetFeed($feedId) {
-        return in_array((int)$feedId, $this->config['feeds'] ?? [], true);
+        $config = $this->getConfig();
+        return in_array((int)$feedId, $config['feeds'] ?? [], true);
     }
 
     public function cleanEntryLink($entry) {
@@ -56,7 +75,10 @@ class GoogleNewsCleanExtension extends Minz_Extension {
         // 快取初始化
         require_once __DIR__ . '/lib/GoogleNewsCache.php';
         $cacheFile = __DIR__ . '/data/cache.json';
-        $cache = new GoogleNewsCache($cacheFile);
+        $config = $this->getConfig();
+        $ttl = isset($config['cache_ttl']) ? (int)$config['cache_ttl'] : 604800;
+        $max = isset($config['cache_max']) ? (int)$config['cache_max'] : 1000;
+        $cache = new GoogleNewsCache($cacheFile, $ttl, $max);
         $cached = $cache->get($url);
         if ($cached) {
             Minz_Log::notice('GoogleNewsClean: cache hit');
