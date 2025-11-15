@@ -58,7 +58,7 @@ class GoogleNewsCleanExtension extends Minz_Extension {
 
     private function isTargetFeed($feedId) {
         $feeds = FreshRSS_Context::$user_conf->GoogleNewsCleanFeeds ?? [];
-        return in_array((int)$feedId, $feeds, true);
+        return isset($feeds[$feedId]) && $feeds[$feedId] == '1';
     }
 
     public function cleanEntryLink($entry) {
