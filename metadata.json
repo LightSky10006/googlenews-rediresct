@@ -3,6 +3,6 @@
   "description": "清理 Google News RSS 的連結，移除追蹤碼並還原原始連結",
   "version": "1.0.0",
   "author": "lightsky10006",
-  "entrypoint": "GoogleNewsClean",
+  "entrypoint": "GoogleNewsCleanExtension",
   "type": "user"
 }

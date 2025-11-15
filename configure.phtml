@@ -5,10 +5,25 @@ $feeds = $feedDao->listFeeds();
 $config = $this->getConfig();
 $selected = $config['feeds'] ?? [];
 $action = _url('extension', 'configure', 'e', urlencode($this->getName()));
+$ttl = (int)($config['cache_ttl'] ?? 604800);
+$max = (int)($config['cache_max'] ?? 1000);
 ?>
 <h2>Google News Clean 設定</h2>
 <form method="post" action="<?php echo htmlspecialchars($action); ?>">
     <input type="hidden" name="_csrf" value="<?php echo FreshRSS_Auth::csrfToken(); ?>" />
+
+    <div class="form-group">
+        <label class="group-name" for="cache-ttl">快取 TTL (秒)</label>
+        <div class="group-controls">
+            <input id="cache-ttl" name="cache_ttl" type="number" min="60" step="60" value="<?php echo htmlspecialchars($ttl); ?>" style="width:160px;"> <span class="help">最少 60，預設 604800 (7 天)</span>
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="group-name" for="cache-max">快取最大筆數</label>
+        <div class="group-controls">
+            <input id="cache-max" name="cache_max" type="number" min="10" step="10" value="<?php echo htmlspecialchars($max); ?>" style="width:160px;"> <span class="help">最少 10，預設 1000</span>
+        </div>
+    </div>
 
     <table class="formTable" style="max-width:840px;">
         <thead>
@@ -30,6 +45,7 @@ $action = _url('extension', 'configure', 'e', urlencode($this->getName()));
         <div class="group-controls">
             <button type="submit" class="btn btn-important"><?php echo _t('gen.action.submit'); ?></button>
             <button type="reset" class="btn"><?php echo _t('gen.action.cancel'); ?></button>
+            <button type="submit" class="btn" name="clear_cache" value="1" onclick="return confirm('確定清除快取？');">清除快取</button>
         </div>
     </div>
 </form>

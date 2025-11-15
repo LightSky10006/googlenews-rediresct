@@ -43,11 +43,32 @@ class GoogleNewsCleanExtension extends Minz_Extension {
                 return;
             }
 
+            $config = $this->getConfig();
+
+            // 清除快取動作
+            if (Minz_Request::param('clear_cache') === '1') {
+                $cacheFile = __DIR__ . '/data/cache.json';
+                if (is_file($cacheFile)) {
+                    @unlink($cacheFile);
+                }
+                Minz_Session::param('info', '快取已清除');
+                Minz_Url::redirect(['c' => 'extension', 'a' => 'configure', 'params' => ['ext' => $this->name]]);
+                return;
+            }
+
+            // Feeds 勾選
             $feeds = Minz_Request::param('feeds', []);
             $feeds = array_map('intval', is_array($feeds) ? $feeds : []);
-
-            $config = $this->getConfig();
             $config['feeds'] = $feeds;
+
+            // 快取 TTL 與最大筆數
+            $ttl = (int)Minz_Request::param('cache_ttl', $config['cache_ttl'] ?? 604800);
+            $max = (int)Minz_Request::param('cache_max', $config['cache_max'] ?? 1000);
+            if ($ttl < 60) { $ttl = 60; }
+            if ($max < 10) { $max = 10; }
+            $config['cache_ttl'] = $ttl;
+            $config['cache_max'] = $max;
+
             $this->saveConfig($config);
             Minz_Session::param('info', _t('gen.form.prefs.updated'));
         }
