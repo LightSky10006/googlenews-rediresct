@@ -1,6 +1,7 @@
 # Google News Clean (FreshRSS Extension)
 
 將 Google News RSS 來源中的轉址連結還原為原始新聞站的 URL，類似 `FreshRSS-Translate` 的操作流程，但聚焦於連結清理。
+
 #⚠️In heavy development⚠️fail for now
 ## 功能
 - 後台可勾選要處理的 Feed。
