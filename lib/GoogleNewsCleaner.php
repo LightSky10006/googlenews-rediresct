@@ -97,17 +97,14 @@ class GoogleNewsCleaner {
     
     private function decodeNewFormat(string $articleId): ?string {
         try {
-            // 步驟 1: 獲取解碼參數
-            $params = $this->getDecodingParams($articleId);
-            if (!$params) {
-                return null;
+            $result = $this->fetchDecodedBatchExecute([$articleId]);
+            
+            if ($result['status'] && !empty($result['urls'])) {
+                return $result['urls'][0];
             }
             
-            // 步驟 2: 使用單個文章調用 batchexecute
-            $decodedUrls = $this->decodeUrlsBatch([$params]);
-            
-            if (!empty($decodedUrls) && isset($decodedUrls[0])) {
-                return $decodedUrls[0];
+            if (isset($result['error'])) {
+                Minz_Log::warning('GoogleNewsClean: Batch execute error: ' . $result['error']);
             }
             
             return null;
@@ -118,174 +115,74 @@ class GoogleNewsCleaner {
         }
     }
     
-    private function getDecodingParams(string $gn_art_id): ?array {
+    private function fetchDecodedBatchExecute(array $ids): array {
         try {
-            $url = "https://news.google.com/articles/$gn_art_id";
+            $envelopes = [];
+            foreach ($ids as $i => $id) {
+                $index = $i + 1;
+                $envelope = sprintf(
+                    '["Fbv4je","[\\"garturlreq\\",[[\\"en-US\\",\\"US\\",[\\"FINANCE_TOP_INDICES\\",\\"WEB_TEST_1_0_0\\"],' .
+                    'null,null,1,1,\\"US:en\\",null,180,null,null,null,null,null,0,null,null,[1608992183,723341000]],' .
+                    '\\"en-US\\",\\"US\\",1,[2,3,4,8],1,0,\\"655000234\\",0,0,null,0],\\"%s\\"]",null,"%d"]',
+                    $id,
+                    $index
+                );
+                $envelopes[] = $envelope;
+            }
             
-            $ch = curl_init($url);
+            $payload = '[[' . implode(',', $envelopes) . ']]';
+            
+            $ch = curl_init('https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je');
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_MAXREDIRS => 5,
-                CURLOPT_TIMEOUT => 15,
-                CURLOPT_SSL_VERIFYPEER => true,
-                CURLOPT_SSL_VERIFYHOST => 2,
-                CURLOPT_ENCODING => '',
-                CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => http_build_query(['f.req' => $payload]),
                 CURLOPT_HTTPHEADER => [
-                    'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Accept-Language: en-US,en;q=0.9',
-                    'Accept-Encoding: gzip, deflate, br',
-                    'Connection: keep-alive',
-                    'Upgrade-Insecure-Requests: 1',
-                    'Sec-Fetch-Dest: document',
-                    'Sec-Fetch-Mode: navigate',
-                    'Sec-Fetch-Site: none',
+                    'Content-Type: application/x-www-form-urlencoded;charset=utf-8',
+                    'Referer: https://news.google.com/',
                 ],
+                CURLOPT_TIMEOUT => 15,
+                CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             ]);
             
             $response = curl_exec($ch);
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $error = curl_error($ch);
             curl_close($ch);
-            
-            if ($error) {
-                Minz_Log::error('GoogleNewsClean: Curl error: ' . $error);
-                return null;
-            }
             
             if ($httpCode !== 200) {
-                Minz_Log::warning("GoogleNewsClean: Failed to fetch article page, HTTP $httpCode");
-                return null;
+                return ['status' => false, 'error' => "HTTP $httpCode"];
             }
             
-            if (empty($response)) {
-                Minz_Log::warning('GoogleNewsClean: Empty response from Google News');
-                return null;
-            }
+            // 使用字串解析提取 URL
+            $urls = [];
+            $header = '[\\"garturlres\\",\\"';
+            $footer = '\\",';
+            $text = $response;
             
-            // Load the response into DOMDocument
-            $dom = new DOMDocument();
-            libxml_use_internal_errors(true); // 抑制 HTML 解析警告
-            $loaded = @$dom->loadHTML($response);
-            libxml_clear_errors();
-            
-            if (!$loaded) {
-                Minz_Log::warning('GoogleNewsClean: Failed to parse HTML response');
-                return null;
-            }
-            
-            $xpath = new DOMXPath($dom);
-            
-            // 嘗試多種可能的選擇器
-            $div = null;
-            $queries = [
-                "//c-wiz/div",
-                "//c-wiz//div[@data-n-a-sg]",
-                "//div[@data-n-a-sg]",
-                "//*[@data-n-a-sg]"
-            ];
-            
-            foreach ($queries as $query) {
-                $result = $xpath->query($query);
-                if ($result && $result->length > 0) {
-                    $div = $result->item(0);
-                    Minz_Log::debug("GoogleNewsClean: Found element using query: $query");
-                    break;
+            while (strpos($text, $header) !== false) {
+                $parts = explode($header, $text, 2);
+                $start = $parts[1];
+                
+                if (strpos($start, $footer) === false) {
+                    return ['status' => false, 'error' => 'Footer not found in response'];
                 }
+                
+                $urlParts = explode($footer, $start, 2);
+                $url = $urlParts[0];
+                $urls[] = $url;
+                $text = $urlParts[1];
             }
             
-            if (!$div) {
-                // 記錄部分 HTML 以便調試
-                $preview = substr(strip_tags($response), 0, 300);
-                Minz_Log::warning('GoogleNewsClean: Could not find element with data-n-a-sg. Response preview: ' . $preview);
-                return null;
+            if (empty($urls)) {
+                return ['status' => false, 'error' => 'No URLs found in response'];
             }
             
-            $signature = $div->getAttribute("data-n-a-sg");
-            $timestamp = $div->getAttribute("data-n-a-ts");
-            
-            if (empty($signature) || empty($timestamp)) {
-                Minz_Log::warning("GoogleNewsClean: Missing signature or timestamp (sig: '$signature', ts: '$timestamp')");
-                return null;
-            }
-            
-            Minz_Log::debug("GoogleNewsClean: Successfully extracted params - signature: $signature, timestamp: $timestamp");
-            
-            return [
-                "signature" => $signature,
-                "timestamp" => $timestamp,
-                "gn_art_id" => $gn_art_id,
-            ];
+            Minz_Log::debug('GoogleNewsClean: Successfully decoded ' . count($urls) . ' URLs via batch execute');
+            return ['status' => true, 'urls' => $urls];
             
         } catch (Throwable $e) {
-            Minz_Log::error('GoogleNewsClean: getDecodingParams exception: ' . $e->getMessage());
-            return null;
-        }
-    }
-    
-    private function decodeUrlsBatch(array $articles): array {
-        try {
-            $articles_reqs = [];
-
-            foreach ($articles as $art) {
-                $articles_reqs[] = [
-                    "Fbv4je",
-                    json_encode([
-                        ["garturlreq", [
-                            ["X", "X", ["X", "X"], null, null, 1, 1, "US:en", null, 1, null, null, null, null, null, 0, 1],
-                            "X", "X", 1, [1, 1, 1], 1, 1, null, 0, 0, null, 0
-                        ]],
-                        $art["gn_art_id"],
-                        $art["timestamp"],
-                        $art["signature"]
-                    ])
-                ];
-            }
-
-            $payload = "f.req=" . urlencode(json_encode([$articles_reqs]));
-            $headers = [
-                "Content-Type: application/x-www-form-urlencoded;charset=UTF-8",
-            ];
-
-            $ch = curl_init("https://news.google.com/_/DotsSplashUi/data/batchexecute");
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-
-            $response = curl_exec($ch);
-            
-            if (curl_errno($ch)) {
-                Minz_Log::error('GoogleNewsClean: Curl error: ' . curl_error($ch));
-                curl_close($ch);
-                return [];
-            }
-            
-            curl_close($ch);
-            
-            $responseParts = explode("\n\n", $response);
-            
-            if (count($responseParts) < 2) {
-                Minz_Log::warning('GoogleNewsClean: Invalid response format');
-                return [];
-            }
-            
-            $decoded = json_decode($responseParts[1], true);
-            
-            if (!$decoded || !is_array($decoded)) {
-                Minz_Log::warning('GoogleNewsClean: Failed to decode JSON response');
-                return [];
-            }
-            
-            return array_map(function($res) {
-                $innerData = json_decode($res[2], true);
-                return $innerData[1];
-            }, array_slice($decoded, 0, -2));
-            
-        } catch (Throwable $e) {
-            Minz_Log::error('GoogleNewsClean: decodeUrlsBatch exception: ' . $e->getMessage());
-            return [];
+            Minz_Log::error('GoogleNewsClean: fetchDecodedBatchExecute exception: ' . $e->getMessage());
+            return ['status' => false, 'error' => $e->getMessage()];
         }
     }
     
